@@ -1,0 +1,2 @@
+# gemini_nano_aituber
+Gemini_nanoAI_Tuberナマちゃん
