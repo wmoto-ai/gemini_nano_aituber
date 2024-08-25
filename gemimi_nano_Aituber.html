@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Tuber ナマちゃん</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="flex flex-col h-screen bg-gradient-to-b from-pink-100 to-purple-100">
+        <header class="bg-white p-4 shadow-sm">
+            <div class="max-w-3xl mx-auto flex items-center justify-between">
+                <h1 class="text-2xl font-bold text-purple-600">AI Tuber ナマちゃん</h1>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center">
+                        <i data-lucide="thermometer" class="mr-2"></i>
+                        <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value="0.7"
+                            id="temperatureSlider"
+                            class="w-24"
+                        />
+                        <span class="ml-2" id="temperatureValue">0.7</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="flex-grow flex overflow-hidden">
+            <div class="w-1/3 p-4 flex flex-col">
+                <div id="chatContainer" class="flex-grow overflow-auto scrollbar-hide">
+                    <div class="space-y-4" id="messagesContainer"></div>
+                </div>
+                <div id="loadingIndicator" class="bg-white rounded-lg p-3 shadow-md animate-pulse mt-4 hidden">
+                    考え中...（酔っ払い中）
+                </div>
+                <div id="errorContainer" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mt-4 hidden" role="alert">
+                    <strong class="font-bold">エラー:</strong>
+                    <span class="block sm:inline" id="errorMessage"></span>
+                </div>
+            </div>
+
+            <div class="w-2/3 flex items-center justify-center bg-gradient-to-r from-pink-200 to-purple-200">
+                <div id="avatar" class="text-8xl relative">
+                    <div class="relative">
+                        🍺
+                        <div class="absolute top-1/3 left-1/2 transform -translate-x-1/2 w-2/5 flex justify-between">
+                            <div class="bg-black rounded-full w-3 h-3"></div>
+                            <div class="bg-black rounded-full w-3 h-3"></div>
+                        </div>
+                        <div class="absolute bottom-1/4 left-1/2 transform -translate-x-1/2 w-1/2 flex justify-center">
+                            <div id="mouth" class="bg-black rounded-full transition-all duration-200 w-6 h-1"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white p-4 shadow-lg">
+            <div class="max-w-3xl mx-auto flex items-center">
+                <input
+                    type="text"
+                    id="userInput"
+                    placeholder="酔っぱらいに聞きたいことを入力してね"
+                    class="flex-grow p-2 rounded-l-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+                <button
+                    id="sendButton"
+                    class="bg-purple-500 text-white p-2 rounded-r-lg hover:bg-purple-600 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-colors"
+                >
+                    <i data-lucide="send"></i>
+                </button>
+            </div>
+        </div>
+
+        <footer class="bg-white p-2 text-center text-sm text-gray-500">
+            <p>powered by Gemmini Nano in Chrome dev, Web Speech API</p>
+        </footer>
+    </div>
+
+    <script>
+        const MAX_MESSAGES = 50;
+        const API_TIMEOUT = 30000;
+        const MIN_CHARS_TO_SPEAK = 10;
+
+        let messages = [];
+        let isLoading = false;
+        let isSpeaking = false;
+        let mouthOpen = false;
+        let error = null;
+        let temperature = 0.7;
+        let mouthInterval = null;
+        let speechQueue = [];
+        let isSpeakingRef = false;
+        let currentStream = '';
+
+        const chatContainer = document.getElementById('chatContainer');
+        const messagesContainer = document.getElementById('messagesContainer');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const errorContainer = document.getElementById('errorContainer');
+        const errorMessage = document.getElementById('errorMessage');
+        const avatar = document.getElementById('avatar');
+        const mouth = document.getElementById('mouth');
+        const userInput = document.getElementById('userInput');
+        const sendButton = document.getElementById('sendButton');
+        const temperatureSlider = document.getElementById('temperatureSlider');
+        const temperatureValue = document.getElementById('temperatureValue');
+
+        function updateScroll() {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function updateMouth() {
+            if (isSpeaking) {
+                mouthInterval = setInterval(() => {
+                    mouthOpen = !mouthOpen;
+                    mouth.className = `bg-black rounded-full transition-all duration-200 ${mouthOpen ? 'w-4 h-4' : 'w-6 h-1'}`;
+                }, 200);
+            } else {
+                clearInterval(mouthInterval);
+                mouthOpen = false;
+                mouth.className = 'bg-black rounded-full transition-all duration-200 w-6 h-1';
+            }
+        }
+
+        function speakNextInQueue() {
+            if (speechQueue.length > 0 && !isSpeakingRef) {
+                const textToSpeak = speechQueue.shift();
+                isSpeakingRef = true;
+                isSpeaking = true;
+                updateMouth();
+                
+                const utterance = new SpeechSynthesisUtterance(textToSpeak);
+                utterance.lang = 'ja-JP';
+                utterance.onend = () => {
+                    isSpeakingRef = false;
+                    isSpeaking = false;
+                    updateMouth();
+                    speakNextInQueue();
+                };
+                utterance.onerror = (event) => {
+                    console.error('Speech synthesis error:', event);
+                    isSpeakingRef = false;
+                    isSpeaking = false;
+                    updateMouth();
+                    speakNextInQueue();
+                };
+                window.speechSynthesis.speak(utterance);
+            }
+        }
+
+        function speakMessage(message) {
+            speechQueue.push(message);
+            if (!isSpeakingRef) {
+                speakNextInQueue();
+            }
+        }
+
+        async function handleStreamingResponse() {
+            if (userInput.value.trim() === '') return;
+            const newUserMessage = { type: 'user', content: userInput.value };
+            messages = [...messages.slice(-MAX_MESSAGES + 1), newUserMessage, { type: 'ai', content: '' }];
+            updateMessages();
+            userInput.value = '';
+            isLoading = true;
+            loadingIndicator.classList.remove('hidden');
+            error = null;
+            errorContainer.classList.add('hidden');
+            currentStream = '';
+
+            try {
+                if (typeof window.ai === 'undefined') {
+                    throw new Error("Gemini Nanoが見つかりません。Chrome拡張機能がインストールされ、有効になっていることを確認してください。");
+                }
+
+                if (typeof window.ai.canCreateTextSession !== 'function') {
+                    throw new Error("Gemini Nanoの必要な機能が見つかりません。Chrome拡張機能が最新バージョンであることを確認してください。");
+                }
+
+                const canCreate = await Promise.race([
+                    window.ai.canCreateTextSession(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), API_TIMEOUT))
+                ]);
+
+                if (canCreate === "no") {
+                    throw new Error("Gemini Nanoが利用できません。Chrome拡張機能の設定を確認してください。");
+                }
+                
+                if (typeof window.ai.defaultTextSessionOptions !== 'function') {
+                    throw new Error("defaultTextSessionOptions関数が見つかりません。Chrome拡張機能が最新バージョンであることを確認してください。");
+                }
+
+                const defaultOptions = await window.ai.defaultTextSessionOptions();
+                const sessionOptions = {
+                    ...defaultOptions,
+                    temperature: temperature
+                };
+
+                const session = await Promise.race([
+                    window.ai.createTextSession(sessionOptions),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), API_TIMEOUT))
+                ]);
+
+                const prompt = `あなたは酔っぱらいのおじさん「ナマちゃん」です。以下の例のように、酔っぱらいのおじさんらしく日本語で答えてください。<ctrl23>
+User: ビール飲みますか。
+Model: おう！飲むぜ！奢ってくれんのかあ？ヒック。
+User: あなたの名前は？
+Model: 俺はナマちゃんや！酔っ払ってるぜ。！
+User: ${newUserMessage.content}
+Model:`;
+
+                if (typeof session.promptStreaming !== 'function') {
+                    throw new Error("promptStreaming関数が見つかりません。Chrome拡張機能が最新バージョンであることを確認してください。");
+                }
+
+                const stream = await session.promptStreaming(prompt);
+                let streamedContent = '';
+
+                for await (const chunk of stream) {
+                    const newText = chunk.slice(streamedContent.length);
+                    streamedContent += newText;
+                    currentStream += newText;
+                    messages[messages.length - 1] = { type: 'ai', content: streamedContent };
+                    updateMessages();
+
+                    if (currentStream.length >= MIN_CHARS_TO_SPEAK) {
+                        speakMessage(currentStream);
+                        currentStream = '';
+                    }
+                }
+
+                if (currentStream.length > 0) {
+                    speakMessage(currentStream);
+                    currentStream = '';
+                }
+
+            } catch (error) {
+                console.error("詳細なエラー情報:", error);
+                let errorMessageText = `エラーが発生しました: ${error.message}`;
+                setError(errorMessageText);
+                messages[messages.length - 1] = { type: 'ai', content: errorMessageText };
+                updateMessages();
+                speakMessage(errorMessageText);
+            } finally {
+                isLoading = false;
+                loadingIndicator.classList.add('hidden');
+            }
+        }
+
+        function updateMessages() {
+            messagesContainer.innerHTML = messages.map((message, index) => `
+                <div class="flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}">
+                    <div class="max-w-xs rounded-lg p-3 ${
+                        message.type === 'user' ? 'bg-blue-500 text-white' : 'bg-white'
+                    } shadow-md">
+                        ${message.type === 'user' ? 'あなた' : 'ナマちゃん'}: ${message.content}
+                    </div>
+                </div>
+            `).join('');
+            updateScroll();
+        }
+
+        function setError(message) {
+            error = message;
+            errorMessage.textContent = message;
+            errorContainer.classList.remove('hidden');
+        }
+
+        sendButton.addEventListener('click', handleStreamingResponse);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleStreamingResponse();
+        });
+
+        temperatureSlider.addEventListener('input', (e) => {
+            temperature = parseFloat(e.target.value);
+            temperatureValue.textContent = temperature.toFixed(1);
+        });
+
+        lucide.createIcons();
+    </script>
+</body>
+</html>
